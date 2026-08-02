@@ -1,0 +1,14 @@
+{
+  "name": "telegram-impostor-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A dependency-free Telegram group bot for the Impostor word game.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.9"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/index.js",
+    "test": "node --test"
+  }
+}
