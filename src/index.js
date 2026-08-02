@@ -1,4 +1,5 @@
 import { loadConfig } from "./config.js";
+import { setBotCommands } from "./bot-setup.js";
 import { BotController } from "./controller.js";
 import { JsonStore } from "./store.js";
 import { TelegramApi, TelegramError } from "./telegram.js";
@@ -8,16 +9,7 @@ const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, mil
 
 async function configureBot(api) {
   await api.call("deleteWebhook", { drop_pending_updates: false });
-  await api.call("setMyCommands", {
-    commands: [
-      { command: "newgame", description: "Open an Impostor game lobby" },
-      { command: "status", description: "Repost the current game panel" },
-      { command: "rules", description: "Explain how to play" },
-      { command: "endgame", description: "Reveal the active round" },
-      { command: "cancelgame", description: "Cancel a lobby or admin-reset a game" },
-      { command: "help", description: "Show bot commands" },
-    ],
-  });
+  await setBotCommands(api);
 }
 
 async function main() {

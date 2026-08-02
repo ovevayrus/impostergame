@@ -9,11 +9,11 @@ const EMPTY_STATE = Object.freeze({
 
 const PHASES = new Set(["lobby", "active", "finished"]);
 
-function freshState() {
+export function freshState() {
   return structuredClone(EMPTY_STATE);
 }
 
-function validateState(state) {
+export function validateState(state) {
   if (
     !state ||
     state.schemaVersion !== 1 ||

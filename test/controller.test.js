@@ -161,7 +161,7 @@ test("an admin bot automatically sends each role as an ephemeral group message",
 
   const { api, store, controller } = makeController(lobby, { botStatus: "administrator" });
   await controller.handleUpdate({ callback_query: callback(lobby, people[2], "start") });
-  await new Promise((resolve) => setImmediate(resolve));
+  await controller.waitForPendingTasks();
 
   const deliveries = api.calls.filter(
     (call) => call.method === "sendMessage" && call.params.receiver_user_id,
@@ -297,7 +297,7 @@ test("Keep playing posts a new-round message, preserves results, and redistribut
   await controller.handleUpdate({
     callback_query: callback(finished, people[1], "replay"),
   });
-  await new Promise((resolve) => setImmediate(resolve));
+  await controller.waitForPendingTasks();
 
   assert.equal(store.session.phase, Phase.ACTIVE);
   assert.notEqual(store.session.controlMessageId, resultMessageId);

@@ -9,6 +9,7 @@
   },
   "scripts": {
     "start": "node --env-file-if-exists=.env src/index.js",
-    "test": "node --test"
+    "test": "node --test",
+    "webhook:set": "node --env-file-if-exists=.env scripts/set-webhook.js"
   }
 }
