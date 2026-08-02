@@ -55,6 +55,7 @@ export class BotController {
     this.botId = bot.id;
     this.botUsername = bot.username;
     this.logger = logger;
+    this.pendingTasks = new Set();
     // Telegram recommends staying under 20 messages per minute in one group.
     this.autoDeliveryIntervalMs = config.autoDeliveryIntervalMs ?? 3_100;
   }
@@ -66,6 +67,12 @@ export class BotController {
     }
     if (update.callback_query) {
       await this.#handleCallback(update.callback_query);
+    }
+  }
+
+  async waitForPendingTasks() {
+    while (this.pendingTasks.size > 0) {
+      await Promise.all([...this.pendingTasks]);
     }
   }
 
@@ -559,9 +566,11 @@ export class BotController {
   }
 
   #queueAutoDelivery(session) {
-    void this.#autoDeliverRoles(session).catch(() => {
+    const task = this.#autoDeliverRoles(session).catch(() => {
       this.logger.warn("Automatic role delivery stopped; players can still use Reveal.");
     });
+    this.pendingTasks.add(task);
+    void task.finally(() => this.pendingTasks.delete(task));
   }
 
   #isSameActiveRound(session) {

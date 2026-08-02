@@ -13,7 +13,7 @@ The bot uses Telegram's **ephemeral group messages**, so a role can appear insid
 - With or without admin access, every player can press **Reveal my role**. The bot sends a user-only group message and also shows a private popup fallback.
 - When a round ends, the bot posts a new public result message naming the word, hint, and Impostor.
 - A player can then tap **Keep playing** to start a new round with the same joined-player roster, or reopen the lobby; the result message remains in the chat history.
-- Active games survive bot restarts in a small local JSON state file.
+- Active games survive restarts in a local JSON file or, on Vercel, Upstash Redis.
 - The included word bank has 175 curated English word/hint pairs with distinct, deliberately indirect one-word clues, and can be replaced.
 
 ## Set up the Telegram bot
@@ -38,6 +38,35 @@ npm.cmd start
 Replace the placeholder in `.env` with the real token before starting. When the terminal says the bot is running, send `/newgame` in the Telegram group.
 
 Only one running process should use a bot token at a time. This app uses long polling and automatically removes an old webhook without discarding pending updates.
+
+## Deploy on Vercel
+
+Vercel runs this bot as a Telegram webhook at `/api/telegram`. Because a Vercel Function cannot keep a polling loop alive or persist changes to its local filesystem, the deployment uses Upstash Redis for game state and a short-lived update lock.
+
+1. Import this GitHub repository into Vercel, or redeploy the existing Vercel project after pulling this version.
+2. In the [Vercel Marketplace](https://vercel.com/marketplace), add an Upstash Redis integration and connect the database to this project. It should inject `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` into the project.
+3. In **Project settings**, open **Environment Variables** and add:
+   - `TELEGRAM_BOT_TOKEN`: the token from BotFather.
+   - `TELEGRAM_WEBHOOK_SECRET`: a long random value containing only letters, numbers, underscores, or hyphens. Keep a copy for the registration step.
+   - Any optional game settings you want from the configuration table below.
+4. Redeploy the production deployment so the integration and environment variables are included.
+5. Copy `.env.example` to `.env` on your computer. Put the same bot token and webhook secret in it, then add the stable production endpoint:
+
+   ```dotenv
+   TELEGRAM_WEBHOOK_URL=https://your-project.vercel.app/api/telegram
+   ```
+
+6. Register that endpoint with Telegram:
+
+   ```powershell
+   npm.cmd run webhook:set
+   ```
+
+The command also installs the bot's command menu and reports Telegram's pending update count or latest delivery error. Opening `https://your-project.vercel.app/api/telegram` in a browser should return a small JSON health response.
+
+Do not run `npm.cmd start` with the same token while using Vercel. The local process deliberately removes the webhook so it can switch Telegram back to long polling. Preview deployments also should not register the production bot token; use the stable production URL.
+
+Vercel is configured to allow up to 120 seconds for a webhook request. Telegram is registered with one connection, and Redis serializes deliveries, so lobby changes and role delivery cannot overwrite each other when Vercel creates multiple Function instances.
 
 ## Run with Docker
 
@@ -77,9 +106,14 @@ All settings are environment variables. Defaults are shown in `.env.example`.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `TELEGRAM_BOT_TOKEN` | required | Secret token from BotFather |
+| `TELEGRAM_WEBHOOK_SECRET` | Vercel only | Random secret Telegram sends with every webhook request |
+| `TELEGRAM_WEBHOOK_URL` | setup command only | Production URL ending in `/api/telegram` |
+| `UPSTASH_REDIS_REST_URL` | Vercel only | Upstash REST endpoint, normally injected by the integration |
+| `UPSTASH_REDIS_REST_TOKEN` | Vercel only | Upstash REST token, normally injected by the integration |
+| `IMPOSTOR_REDIS_PREFIX` | `impostor:<VERCEL_ENV>` | Optional namespace for Redis keys |
 | `MIN_PLAYERS` | `3` | Players required to start |
 | `MAX_PLAYERS` | `12` | Maximum lobby size |
-| `DATA_FILE` | `.data/state.json` | Persistent state location |
+| `DATA_FILE` | `.data/state.json` | Persistent state location for local/Docker mode only |
 | `WORDS_FILE` | bundled file | Optional custom JSON word bank |
 | `AUTO_SEND_ROLES_IF_ADMIN` | `true` | Push roles at round start when the bot is an admin |
 | `POLL_TIMEOUT_SECONDS` | `25` | Telegram long-poll duration |
@@ -117,7 +151,7 @@ Telegram bots cannot normally initiate an ordinary private chat with a group mem
 
 Telegram Bot API 10.2 introduced ephemeral group messages in July 2026. A group-admin bot can send one to any non-bot member; a non-admin bot can send one for up to 15 seconds after that user taps a callback button. Telegram notes that delivery is not guaranteed, especially while a user is offline, and ephemeral messages may disappear after some time or an app restart. **Reveal my role** is therefore always available and its private popup repeats the role as a fallback.
 
-Only the game ID, revision, and action are placed in button callback data. Words, hints, and player roles remain server-side. Private role messages use content protection, while the public game panel never contains an active round's secret. The state file does contain the current word and should be kept private; `.data/` and `.env` are excluded from Git.
+Only the game ID, revision, and action are placed in button callback data. Words, hints, and player roles remain server-side. Private role messages use content protection, while the public game panel never contains an active round's secret. The persistent state does contain the current word and should be kept private; `.data/` and `.env` are excluded from Git.
 
 The Bot API does not provide a general list of every group member, so players must opt in by pressing **Join**. One active lobby or game is supported per group.
 
@@ -130,3 +164,5 @@ npm.cmd test
 ```
 
 The tests cover assignment secrecy, exactly one Impostor, lobby rules, rematches, callback validation, private recipient targeting, public-message leakage, automatic admin delivery, and persistent state.
+
+Webhook deployment references: [Vercel Functions](https://vercel.com/docs/functions), [Vercel Redis integrations](https://vercel.com/docs/redis), [Upstash's Vercel integration](https://upstash.com/docs/redis/howto/vercelintegration), and [Telegram `setWebhook`](https://core.telegram.org/bots/api#setwebhook).
