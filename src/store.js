@@ -8,6 +8,7 @@ const EMPTY_STATE = Object.freeze({
 });
 
 const PHASES = new Set(["lobby", "active", "finished"]);
+const VOTING_STATUSES = new Set(["open", "tiebreak"]);
 
 export function freshState() {
   return structuredClone(EMPTY_STATE);
@@ -37,6 +38,91 @@ export function validateState(state) {
 
 function invalidSession(chatKey, detail) {
   throw new Error(`The saved game for chat ${chatKey} is invalid: ${detail}.`);
+}
+
+function validateVoting(chatKey, voting, playerIds) {
+  if (voting == null) return;
+  if (
+    typeof voting !== "object" ||
+    Array.isArray(voting) ||
+    !VOTING_STATUSES.has(voting.status) ||
+    !Number.isSafeInteger(voting.ballotNumber) ||
+    voting.ballotNumber < 1 ||
+    !Array.isArray(voting.candidateIds) ||
+    !Array.isArray(voting.ballots)
+  ) {
+    invalidSession(chatKey, "invalid voting round");
+  }
+
+  const candidateIds = new Set(voting.candidateIds);
+  if (
+    voting.candidateIds.length < 2 ||
+    candidateIds.size !== voting.candidateIds.length ||
+    voting.candidateIds.some((id) => !playerIds.has(id))
+  ) {
+    invalidSession(chatKey, "invalid voting candidates");
+  }
+
+  const voterIds = new Set();
+  for (const ballot of voting.ballots) {
+    if (
+      !ballot ||
+      typeof ballot !== "object" ||
+      Array.isArray(ballot) ||
+      !playerIds.has(ballot.voterId) ||
+      !candidateIds.has(ballot.candidateId) ||
+      voterIds.has(ballot.voterId)
+    ) {
+      invalidSession(chatKey, "invalid or duplicate ballot");
+    }
+    voterIds.add(ballot.voterId);
+  }
+
+  if (voting.status === "tiebreak" && voting.ballots.length !== 0) {
+    invalidSession(chatKey, "a tiebreak contains ballots");
+  }
+}
+
+function validateVoteResult(chatKey, voteResult, playerIds) {
+  if (voteResult == null) return;
+  if (
+    typeof voteResult !== "object" ||
+    Array.isArray(voteResult) ||
+    !Number.isSafeInteger(voteResult.ballotNumber) ||
+    voteResult.ballotNumber < 1 ||
+    !playerIds.has(voteResult.accusedId) ||
+    !Array.isArray(voteResult.counts)
+  ) {
+    invalidSession(chatKey, "invalid voting result");
+  }
+
+  const candidateIds = new Set();
+  let accusedCount = null;
+  for (const entry of voteResult.counts) {
+    if (
+      !entry ||
+      typeof entry !== "object" ||
+      Array.isArray(entry) ||
+      !playerIds.has(entry.candidateId) ||
+      candidateIds.has(entry.candidateId) ||
+      !Number.isSafeInteger(entry.count) ||
+      entry.count < 0
+    ) {
+      invalidSession(chatKey, "invalid voting result counts");
+    }
+    candidateIds.add(entry.candidateId);
+    if (entry.candidateId === voteResult.accusedId) accusedCount = entry.count;
+  }
+
+  if (
+    accusedCount === null ||
+    accusedCount < 1 ||
+    voteResult.counts.some(
+      (entry) => entry.candidateId !== voteResult.accusedId && entry.count >= accusedCount,
+    )
+  ) {
+    invalidSession(chatKey, "the accused player is not the unique vote leader");
+  }
 }
 
 function validateSession(chatKey, session) {
@@ -96,6 +182,9 @@ function validateSession(chatKey, session) {
 
   if (session.phase === "lobby") {
     if (session.assignment !== null) invalidSession(chatKey, "a lobby contains a role assignment");
+    if (session.voting != null || session.voteResult != null) {
+      invalidSession(chatKey, "a lobby contains voting data");
+    }
     return;
   }
 
@@ -120,6 +209,15 @@ function validateSession(chatKey, session) {
   ) {
     invalidSession(chatKey, "invalid clue order or role-view list");
   }
+
+  if (session.phase === "active") {
+    if (session.voteResult != null) invalidSession(chatKey, "an active game contains a vote result");
+    validateVoting(chatKey, session.voting, playerIds);
+    return;
+  }
+
+  if (session.voting != null) invalidSession(chatKey, "a finished game contains active voting");
+  validateVoteResult(chatKey, session.voteResult, playerIds);
 }
 
 export class JsonStore {

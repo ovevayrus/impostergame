@@ -53,6 +53,8 @@ export function createLobby({ chatId, threadId = null, creator, idFactory = crea
     round: 0,
     players: [player],
     assignment: null,
+    voting: null,
+    voteResult: null,
     recentWords: [],
     createdAt: now,
     updatedAt: now,
@@ -161,6 +163,8 @@ export function startRound(
     order,
     viewedPlayerIds: [],
   };
+  next.voting = null;
+  next.voteResult = null;
   next.recentWords = [...next.recentWords, entry.word].slice(-recentLimit);
   return touch(next);
 }
@@ -197,11 +201,110 @@ export function markRoleViewed(session, userId) {
   return { session: touch(next), changed: true };
 }
 
+function requireOpenVoting(session) {
+  requirePhase(session, Phase.ACTIVE);
+  if (session.voting?.status !== "open") {
+    throw new GameRuleError("voting_not_open", "Voting is not open right now.");
+  }
+}
+
+export function startVoting(session) {
+  requirePhase(session, Phase.ACTIVE);
+  if (session.voting) {
+    throw new GameRuleError("voting_already_started", "Voting has already started.");
+  }
+
+  const next = copySession(session);
+  next.voting = {
+    status: "open",
+    ballotNumber: 1,
+    candidateIds: [...next.assignment.order],
+    ballots: [],
+  };
+  next.voteResult = null;
+  next.revision += 1;
+  return touch(next);
+}
+
+export function castVote(session, voterId, candidateId) {
+  requireOpenVoting(session);
+  if (!isPlayer(session, voterId)) {
+    throw new GameRuleError("not_a_player", "Only a player in this round can vote.");
+  }
+  if (!session.voting.candidateIds.includes(candidateId)) {
+    throw new GameRuleError("invalid_candidate", "That player is not a candidate in this vote.");
+  }
+
+  const next = copySession(session);
+  const existingIndex = next.voting.ballots.findIndex((ballot) => ballot.voterId === voterId);
+  if (existingIndex >= 0) {
+    if (next.voting.ballots[existingIndex].candidateId === candidateId) {
+      return { session: next, changed: false };
+    }
+    next.voting.ballots[existingIndex].candidateId = candidateId;
+  } else {
+    next.voting.ballots.push({ voterId, candidateId });
+  }
+  return { session: touch(next), changed: true };
+}
+
+export function closeVoting(session) {
+  requireOpenVoting(session);
+  if (session.voting.ballots.length === 0) {
+    throw new GameRuleError("no_votes", "At least one vote is required before voting can close.");
+  }
+
+  const next = copySession(session);
+  const counts = next.voting.candidateIds.map((candidateId) => ({
+    candidateId,
+    count: next.voting.ballots.filter((ballot) => ballot.candidateId === candidateId).length,
+  }));
+  const highestCount = Math.max(...counts.map(({ count }) => count));
+  const leaders = counts
+    .filter(({ count }) => count === highestCount)
+    .map(({ candidateId }) => candidateId);
+
+  next.revision += 1;
+  next.voteResult = null;
+  if (leaders.length > 1) {
+    next.voting = {
+      status: "tiebreak",
+      ballotNumber: next.voting.ballotNumber + 1,
+      candidateIds: leaders,
+      ballots: [],
+    };
+    return touch(next);
+  }
+
+  next.phase = Phase.FINISHED;
+  next.voteResult = {
+    ballotNumber: next.voting.ballotNumber,
+    accusedId: leaders[0],
+    counts,
+  };
+  next.voting = null;
+  return touch(next);
+}
+
+export function startTieBreakVoting(session) {
+  requirePhase(session, Phase.ACTIVE);
+  if (session.voting?.status !== "tiebreak") {
+    throw new GameRuleError("no_tiebreak", "There is no tie-break vote to start.");
+  }
+
+  const next = copySession(session);
+  next.voting.status = "open";
+  next.revision += 1;
+  return touch(next);
+}
+
 export function finishRound(session) {
   requirePhase(session, Phase.ACTIVE);
   const next = copySession(session);
   next.phase = Phase.FINISHED;
   next.revision += 1;
+  next.voting = null;
+  next.voteResult = null;
   return touch(next);
 }
 
@@ -211,6 +314,8 @@ export function reopenLobby(session) {
   next.phase = Phase.LOBBY;
   next.revision += 1;
   next.assignment = null;
+  next.voting = null;
+  next.voteResult = null;
   return touch(next);
 }
 
@@ -218,13 +323,33 @@ export function isPlayer(session, userId) {
   return session.players.some((player) => player.id === userId);
 }
 
-export function callbackData(session, action) {
-  return `ig:${session.id}:${session.revision}:${action}`;
+export function callbackData(session, action, argument) {
+  if (
+    argument !== undefined &&
+    (!Number.isSafeInteger(argument) || argument < 0)
+  ) {
+    throw new TypeError("Callback argument must be a non-negative safe integer.");
+  }
+
+  const value = `ig:${session.id}:${session.revision}:${action}${
+    argument === undefined ? "" : `:${argument}`
+  }`;
+  if (Buffer.byteLength(value, "utf8") > 64) {
+    throw new RangeError("Callback data cannot exceed 64 bytes.");
+  }
+  return value;
 }
 
 export function parseCallbackData(value) {
-  if (typeof value !== "string") return null;
-  const match = /^ig:([A-Za-z0-9_-]{6,24}):(\d{1,8}):([a-z_]{2,20})$/.exec(value);
+  if (typeof value !== "string" || Buffer.byteLength(value, "utf8") > 64) return null;
+  const match =
+    /^ig:([A-Za-z0-9_-]{6,24}):(\d{1,8}):([a-z_]{2,20})(?::(\d{1,16}))?$/.exec(value);
   if (!match) return null;
-  return { gameId: match[1], revision: Number(match[2]), action: match[3] };
+  const parsed = { gameId: match[1], revision: Number(match[2]), action: match[3] };
+  if (match[4] !== undefined) {
+    const argument = Number(match[4]);
+    if (!Number.isSafeInteger(argument)) return null;
+    parsed.argument = argument;
+  }
+  return parsed;
 }

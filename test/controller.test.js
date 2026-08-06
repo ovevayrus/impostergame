@@ -83,11 +83,11 @@ function activeSession() {
   return startRound(lobby, wordBank, { randomInt: () => 0 });
 }
 
-function callback(session, from, action) {
+function callback(session, from, action, argument) {
   return {
     id: `query-${from.id}`,
     from,
-    data: callbackData(session, action),
+    data: callbackData(session, action, argument),
     message: {
       message_id: session.controlMessageId,
       chat: { id: session.chatId, type: "supergroup" },
@@ -182,6 +182,185 @@ test("an admin bot automatically sends each role as an ephemeral group message",
   }
 });
 
+test("joined players can start a private inline poll and change their vote", async () => {
+  const session = activeSession();
+  const outsider = { id: 44, first_name: "Outsider", is_bot: false };
+  const { api, store, controller } = makeController(session);
+
+  await controller.handleUpdate({
+    callback_query: callback(session, people[1], "start_vote"),
+  });
+
+  const voting = structuredClone(store.session);
+  assert.equal(voting.phase, Phase.ACTIVE);
+  assert.equal(voting.voting.status, "open");
+  assert.equal(voting.voting.ballotNumber, 1);
+  assert.deepEqual(voting.voting.ballots, []);
+  assert.equal(voting.revision, session.revision + 1);
+
+  const pollEdit = api.calls.find(
+    (call) =>
+      call.method === "editMessageText" &&
+      /Who is the Impostor/i.test(call.params.text),
+  );
+  assert.ok(pollEdit, "the active panel should become a voting poll");
+  assert.equal(pollEdit.params.text.includes(session.assignment.word), false);
+  assert.equal(pollEdit.params.text.includes(session.assignment.hint), false);
+
+  await controller.handleUpdate({
+    callback_query: callback(voting, outsider, "vote", 0),
+  });
+  assert.deepEqual(store.session.voting.ballots, []);
+  assert.match(api.calls.at(-1).params.text, /only joined players/i);
+
+  const firstRevision = store.session.revision;
+  const firstCandidate = store.session.voting.candidateIds[0];
+  await controller.handleUpdate({
+    callback_query: callback(store.session, people[1], "vote", 0),
+  });
+  assert.deepEqual(store.session.voting.ballots, [
+    { voterId: people[1].id, candidateId: firstCandidate },
+  ]);
+
+  const secondCandidate = store.session.voting.candidateIds[1];
+  await controller.handleUpdate({
+    callback_query: callback(store.session, people[1], "vote", 1),
+  });
+  assert.deepEqual(store.session.voting.ballots, [
+    { voterId: people[1].id, candidateId: secondCandidate },
+  ]);
+  assert.equal(store.session.revision, firstRevision, "changing a vote keeps poll buttons valid");
+});
+
+test("a unanimous poll catches the Impostor and offers a new round", async () => {
+  const session = activeSession();
+  const { api, store, controller } = makeController(session);
+
+  await controller.handleUpdate({
+    callback_query: callback(session, people[1], "start_vote"),
+  });
+  const impostorIndex = store.session.voting.candidateIds.indexOf(
+    store.session.assignment.impostorId,
+  );
+
+  for (const player of people) {
+    await controller.handleUpdate({
+      callback_query: callback(store.session, player, "vote", impostorIndex),
+    });
+  }
+
+  assert.equal(store.session.phase, Phase.FINISHED);
+  assert.equal(store.session.voteResult.accusedId, session.assignment.impostorId);
+  const result = api.calls.find(
+    (call) =>
+      call.method === "sendMessage" &&
+      !call.params.receiver_user_id &&
+      /has been caught/i.test(call.params.text),
+  );
+  assert.ok(result, "the bot should publicly announce the caught outcome");
+  assert.match(result.params.text, /Telescope/);
+  assert.match(result.params.reply_markup.inline_keyboard[0][0].text, /Start new round/);
+});
+
+test("a tied poll runs an extra-clue round and a runoff before resolving", async () => {
+  const session = activeSession();
+  const { api, store, controller } = makeController(session);
+
+  await controller.handleUpdate({
+    callback_query: callback(session, people[0], "start_vote"),
+  });
+  for (const [index, player] of people.entries()) {
+    await controller.handleUpdate({
+      callback_query: callback(store.session, player, "vote", index),
+    });
+  }
+
+  assert.equal(store.session.phase, Phase.ACTIVE);
+  assert.equal(store.session.voting.status, "tiebreak");
+  assert.equal(store.session.voting.ballotNumber, 2);
+  assert.equal(store.session.voting.candidateIds.length, 3);
+  assert.deepEqual(store.session.voting.ballots, []);
+  const tiePanel = api.calls.find(
+    (call) =>
+      call.method === "sendMessage" &&
+      !call.params.receiver_user_id &&
+      /extra clue/i.test(call.params.text),
+  );
+  assert.ok(tiePanel);
+  assert.equal(tiePanel.params.text.includes(session.assignment.word), false);
+  assert.equal(tiePanel.params.text.includes(session.assignment.hint), false);
+
+  await controller.handleUpdate({
+    callback_query: callback(store.session, people[1], "runoff"),
+  });
+  assert.equal(store.session.voting.status, "open");
+  const impostorIndex = store.session.voting.candidateIds.indexOf(
+    store.session.assignment.impostorId,
+  );
+  const otherIndex = impostorIndex === 0 ? 1 : 0;
+
+  await controller.handleUpdate({
+    callback_query: callback(store.session, people[0], "vote", impostorIndex),
+  });
+  await controller.handleUpdate({
+    callback_query: callback(store.session, people[1], "vote", impostorIndex),
+  });
+  await controller.handleUpdate({
+    callback_query: callback(store.session, people[2], "vote", otherIndex),
+  });
+
+  assert.equal(store.session.phase, Phase.FINISHED);
+  assert.equal(store.session.voteResult.ballotNumber, 2);
+  assert.equal(store.session.voteResult.accusedId, session.assignment.impostorId);
+});
+
+test("players can finish a partial ballot after a private confirmation", async () => {
+  const session = activeSession();
+  const { api, store, controller } = makeController(session);
+  await controller.handleUpdate({
+    callback_query: callback(session, people[0], "start_vote"),
+  });
+  await controller.handleUpdate({
+    callback_query: callback(store.session, people[0], "vote", 1),
+  });
+
+  const voting = structuredClone(store.session);
+  await controller.handleUpdate({
+    callback_query: callback(voting, people[0], "finish_vote"),
+  });
+  const confirmation = api.calls.find(
+    (call) =>
+      call.method === "sendMessage" &&
+      call.params.receiver_user_id === people[0].id &&
+      /Finish voting now/i.test(call.params.text),
+  );
+  assert.ok(confirmation);
+
+  await controller.handleUpdate({
+    callback_query: {
+      id: "query-finish-vote",
+      from: people[0],
+      data: confirmation.params.reply_markup.inline_keyboard[0][0].callback_data,
+      message: {
+        message_id: 0,
+        ephemeral_message_id: 789,
+        receiver_user: people[0],
+        chat: { id: session.chatId, type: "supergroup" },
+      },
+    },
+  });
+
+  assert.equal(store.session.phase, Phase.FINISHED);
+  assert.equal(store.session.voteResult.counts.reduce((sum, entry) => sum + entry.count, 0), 1);
+  const missedResult = api.calls.find(
+    (call) =>
+      call.method === "sendMessage" &&
+      !call.params.receiver_user_id &&
+      /hasn't been caught/i.test(call.params.text),
+  );
+  assert.ok(missedResult, "an incorrect group verdict should announce that the Impostor escaped");
+});
+
 test("revealing the answer requires a private second tap", async () => {
   const session = activeSession();
   const { api, store, controller } = makeController(session);
@@ -268,7 +447,7 @@ test("the endgame command also posts word, hint, and Impostor in a new public me
   assert.match(result.params.text, /Ari/);
 });
 
-test("Keep playing posts a new-round message, preserves results, and redistributes roles", async () => {
+test("Start new round posts a fresh panel, preserves results, and redistributes roles", async () => {
   const session = activeSession();
   const { api, store, controller } = makeController(session, {
     botStatus: "administrator",
@@ -292,7 +471,7 @@ test("Keep playing posts a new-round message, preserves results, and redistribut
   );
   assert.equal(
     resultMessage.params.reply_markup.inline_keyboard[0][0].text,
-    "▶️ Keep playing",
+    "▶️ Start new round",
   );
   await controller.handleUpdate({
     callback_query: callback(finished, people[1], "replay"),
@@ -307,7 +486,7 @@ test("Keep playing posts a new-round message, preserves results, and redistribut
       !call.params.receiver_user_id &&
       /New round 2/.test(call.params.text),
   );
-  assert.ok(newRoundMessage, "Keep playing should post a new public round message");
+  assert.ok(newRoundMessage, "Start new round should post a new public round message");
   assert.equal(newRoundMessage.params.text.includes("Telescope"), false);
   assert.equal(newRoundMessage.params.text.includes("Galileo"), false);
   assert.ok(

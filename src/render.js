@@ -7,7 +7,9 @@ export const RULES_TEXT = [
   "2. Most players get the same secret word. One random player is the Impostor and gets only a related hint.",
   "3. In the displayed order, each player says one word or short phrase connected to the secret word.",
   "4. Discuss who sounded suspicious. The group tries to identify the Impostor; the Impostor tries to guess the secret word.",
-  "5. Tap <b>Reveal answer</b> when you are ready to finish the round.",
+  "5. Tap <b>Start voting</b>. Each player privately votes for the person they think is the Impostor.",
+  "6. If the vote is tied, each tied player gives one new clue word aloud, then the group holds a tie-break vote.",
+  "7. The bot announces whether the Impostor was caught, shows the final tally, and reveals the answer.",
 ].join("\n");
 
 export const HELP_TEXT = [
@@ -19,10 +21,11 @@ export const HELP_TEXT = [
   "/newgame — open a lobby",
   "/status — repost the current game panel",
   "/rules — explain the game",
-  "/endgame — reveal an active round",
+  "/endgame — skip voting and reveal an active round",
   "/cancelgame — cancel your lobby; group admins can reset any game",
   "",
-  "Roles are shown privately inside the group. Nobody needs to start a direct chat with the bot.",
+  "Roles and votes are handled privately inside the group. Nobody needs to start a direct chat with the bot.",
+  "After the clues and discussion, use <b>Start voting</b>. A tied vote triggers an extra clue round and a tie-break ballot.",
 ].join("\n");
 
 export function escapeHtml(value) {
@@ -39,6 +42,12 @@ export function playerMention(player) {
 
 function playerById(session, userId) {
   return session.players.find((player) => player.id === userId);
+}
+
+function truncateButtonText(value, maxLength = 64) {
+  const characters = Array.from(String(value));
+  if (characters.length <= maxLength) return characters.join("");
+  return `${characters.slice(0, maxLength - 1).join("")}…`;
 }
 
 function lobbyKeyboard(session) {
@@ -60,7 +69,37 @@ function activeKeyboard(session) {
   return {
     inline_keyboard: [
       [{ text: "🔐 Reveal my role", callback_data: callbackData(session, "reveal") }],
+      [{ text: "🗳 Start voting", callback_data: callbackData(session, "start_vote") }],
       [{ text: "🏁 Reveal answer", callback_data: callbackData(session, "end") }],
+    ],
+  };
+}
+
+function openVotingKeyboard(session) {
+  const candidateRows = session.voting.candidateIds.map((candidateId, candidateIndex) => {
+    const candidate = playerById(session, candidateId);
+    return [
+      {
+        text: truncateButtonText(`🗳 Vote for ${candidate.name}`),
+        callback_data: callbackData(session, "vote", candidateIndex),
+      },
+    ];
+  });
+
+  return {
+    inline_keyboard: [
+      ...candidateRows,
+      [{ text: "🔐 Reveal my role", callback_data: callbackData(session, "reveal") }],
+      [{ text: "✅ Finish voting", callback_data: callbackData(session, "finish_vote") }],
+    ],
+  };
+}
+
+function tiebreakKeyboard(session) {
+  return {
+    inline_keyboard: [
+      [{ text: "🗳 Start tie-break vote", callback_data: callbackData(session, "runoff") }],
+      [{ text: "🔐 Reveal my role", callback_data: callbackData(session, "reveal") }],
     ],
   };
 }
@@ -68,7 +107,7 @@ function activeKeyboard(session) {
 function finishedKeyboard(session) {
   return {
     inline_keyboard: [
-      [{ text: "▶️ Keep playing", callback_data: callbackData(session, "replay") }],
+      [{ text: "▶️ Start new round", callback_data: callbackData(session, "replay") }],
       [
         { text: "👥 Reopen lobby", callback_data: callbackData(session, "lobby") },
         { text: "✖️ Close", callback_data: callbackData(session, "close") },
@@ -103,6 +142,51 @@ export function renderLobby(session, { minPlayers, maxPlayers }) {
 }
 
 export function renderActive(session) {
+  if (session.voting?.status === "open") {
+    const votesCast = new Set(session.voting.ballots.map((ballot) => ballot.voterId)).size;
+    const total = session.players.length;
+    const ballotLabel =
+      session.voting.ballotNumber === 1
+        ? "Impostor vote"
+        : `Tie-break vote ${session.voting.ballotNumber - 1}`;
+
+    return {
+      text: [
+        `🗳 <b>Who is the Impostor? — round ${session.round}</b>`,
+        `<b>${ballotLabel}</b>`,
+        "",
+        `Private voting progress: <b>${votesCast}/${total}</b>`,
+        "Tap one name below. Your choice stays private while the ballot is open.",
+        "",
+        "Voting closes automatically when all joined players have voted.",
+        "To close the ballot early, any player can tap <b>Finish voting</b>.",
+      ].join("\n"),
+      replyMarkup: openVotingKeyboard(session),
+    };
+  }
+
+  if (session.voting?.status === "tiebreak") {
+    const tiedPlayers = session.voting.candidateIds
+      .map((id, index) => `${index + 1}. ${playerMention(playerById(session, id))}`)
+      .join("\n");
+
+    return {
+      text: [
+        "⚖️ <b>Vote tied — extra clue round</b>",
+        `Ballot ${session.voting.ballotNumber - 1} ended in a tie.`,
+        "",
+        "<b>Tied players — new clue order</b>",
+        tiedPlayers,
+        "",
+        "Each tied player now gives one new clue word aloud, in the order above.",
+        "Give a fresh public clue based on what you know — do not say the private word or hint assigned by the bot.",
+        "",
+        "When every tied player has spoken, tap <b>Start tie-break vote</b>.",
+      ].join("\n"),
+      replyMarkup: tiebreakKeyboard(session),
+    };
+  }
+
   const viewed = session.assignment.viewedPlayerIds.length;
   const total = session.players.length;
   const order = session.assignment.order
@@ -124,6 +208,7 @@ export function renderActive(session) {
       order,
       "",
       "Give one related word or short phrase each, then discuss who the Impostor might be.",
+      "When everyone is ready, tap <b>Start voting</b>. <b>Reveal answer</b> remains available as a fallback.",
     ].join("\n"),
     replyMarkup: activeKeyboard(session),
   };
@@ -131,14 +216,49 @@ export function renderActive(session) {
 
 export function renderFinished(session) {
   const impostor = playerById(session, session.assignment.impostorId);
+  const revealLines = [
+    `🔐 <b>Word:</b> ${escapeHtml(session.assignment.word)}`,
+    `💡 <b>Hint:</b> ${escapeHtml(session.assignment.hint)}`,
+    `🕵️ <b>Actual Impostor:</b> ${playerMention(impostor)}`,
+    `🗂 <b>Category:</b> ${escapeHtml(session.assignment.category)}`,
+  ];
+
+  if (!session.voteResult) {
+    return {
+      text: [
+        `🏁 <b>Round ${session.round} results</b>`,
+        "",
+        "Voting was skipped, so there was no group verdict.",
+        "",
+        ...revealLines,
+      ].join("\n"),
+      replyMarkup: finishedKeyboard(session),
+    };
+  }
+
+  const accused = playerById(session, session.voteResult.accusedId);
+  const caught = session.voteResult.accusedId === session.assignment.impostorId;
+  const tally = session.voteResult.counts
+    .map(({ candidateId, count }) => {
+      const player = playerById(session, candidateId);
+      const voteLabel = count === 1 ? "vote" : "votes";
+      return `${playerMention(player)} — <b>${count}</b> ${voteLabel}`;
+    })
+    .join("\n");
+
   return {
     text: [
       `🏁 <b>Round ${session.round} results</b>`,
       "",
-      `🔐 <b>Word:</b> ${escapeHtml(session.assignment.word)}`,
-      `💡 <b>Hint:</b> ${escapeHtml(session.assignment.hint)}`,
-      `🕵️ <b>Impostor:</b> ${playerMention(impostor)}`,
-      `🗂 <b>Category:</b> ${escapeHtml(session.assignment.category)}`,
+      caught
+        ? "✅ <b>The Impostor has been caught!</b>"
+        : "❌ <b>The Impostor hasn't been caught.</b>",
+      `🗳 <b>The group voted for:</b> ${playerMention(accused)}`,
+      "",
+      `<b>Final tally — ballot ${session.voteResult.ballotNumber}</b>`,
+      tally,
+      "",
+      ...revealLines,
     ].join("\n"),
     replyMarkup: finishedKeyboard(session),
   };

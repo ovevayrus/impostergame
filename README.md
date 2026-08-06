@@ -11,8 +11,10 @@ The bot uses Telegram's **ephemeral group messages**, so a role can appear insid
 - Any member who presses **Start game** is automatically joined, then the bot securely randomizes the word, Impostor, and clue order.
 - If the bot is a group admin, it automatically tries to send each role as a rate-limited, user-only group message.
 - With or without admin access, every player can press **Reveal my role**. The bot sends a user-only group message and also shows a private popup fallback.
-- When a round ends, the bot posts a new public result message naming the word, hint, and Impostor.
-- A player can then tap **Keep playing** to start a new round with the same joined-player roster, or reopen the lobby; the result message remains in the chat history.
+- After the clues and discussion, the group starts a private in-game poll. Each player votes for who they think is the Impostor.
+- If two or more players tie for the most votes, those tied players each give one new clue word before a tie-break ballot.
+- When voting ends, the bot announces whether the Impostor was caught and posts the final tally, word, hint, actual Impostor, and category.
+- A player can then tap **Start new round** to play again with the same joined-player roster, or reopen the lobby; the result message remains in the chat history.
 - Active games survive restarts in a local JSON file or, on Vercel, Upstash Redis.
 - The included word bank has 175 curated English word/hint pairs with distinct, deliberately indirect one-word clues, and can be replaced.
 
@@ -84,7 +86,7 @@ The named volume preserves active games across container replacements. The proce
 | `/newgame` | Open a lobby and join it |
 | `/status` | Repost a fresh, working copy of the current game panel |
 | `/rules` | Explain how to play |
-| `/endgame` | Reveal the word and Impostor for an active round |
+| `/endgame` | Skip voting and reveal the word and Impostor for an active round |
 | `/cancelgame` | Cancel a lobby you created; group admins can reset any stuck game |
 | `/help` | Show bot help |
 
@@ -96,8 +98,13 @@ The named volume preserves active games across container replacements. The proce
 4. Each player reads the private role delivered inside the group, or taps **Reveal my role** to retrieve it again.
 5. Players give one related word or short phrase in the order displayed by the bot.
 6. The group discusses and guesses the Impostor. The Impostor tries to identify the secret word.
-7. A participating player taps **Reveal answer**, then confirms privately. The bot posts the word, hint, and Impostor in a new message for everyone.
-8. Tap **Keep playing** to post a new-round panel and privately distribute a fresh set of roles to the same roster.
+7. A player taps **Start voting**. Every player privately selects one name, and the public panel shows only how many votes have been cast while the ballot is open.
+8. Voting closes automatically when every joined player has voted. A player can tap **Finish voting** to close a partial ballot early. If the top vote is tied, each tied player gives one fresh clue word aloud in the displayed order. This is a new public clue, not the player's private assigned word or hint.
+9. After those extra clues, tap **Start tie-break vote** and vote among the tied players. Further ties repeat the extra-clue and tie-break process.
+10. When a ballot has one winner, the bot says whether the group caught the Impostor, shows who the group selected and the final tally, then reveals the word, hint, actual Impostor, and category.
+11. Tap **Start new round** to post a new-round panel and privately distribute a fresh set of roles to the same roster.
+
+**Reveal answer** and `/endgame` remain available before voting starts as a fallback for ending a round without a ballot.
 
 ## Configuration
 
@@ -151,7 +158,7 @@ Telegram bots cannot normally initiate an ordinary private chat with a group mem
 
 Telegram Bot API 10.2 introduced ephemeral group messages in July 2026. A group-admin bot can send one to any non-bot member; a non-admin bot can send one for up to 15 seconds after that user taps a callback button. Telegram notes that delivery is not guaranteed, especially while a user is offline, and ephemeral messages may disappear after some time or an app restart. **Reveal my role** is therefore always available and its private popup repeats the role as a fallback.
 
-Only the game ID, revision, and action are placed in button callback data. Words, hints, and player roles remain server-side. Private role messages use content protection, while the public game panel never contains an active round's secret. The persistent state does contain the current word and should be kept private; `.data/` and `.env` are excluded from Git.
+Only the game ID, revision, action, and a candidate index are placed in button callback data. Words, hints, player roles, and in-progress ballot choices remain server-side. The public voting panel shows participation progress but not who voted for whom; the tally appears only when voting is finished. Private role messages use content protection, while the public game panel never contains an active round's secret. The persistent state does contain the current word and ballot choices and should be kept private; `.data/` and `.env` are excluded from Git.
 
 The Bot API does not provide a general list of every group member, so players must opt in by pressing **Join**. One active lobby or game is supported per group.
 
@@ -163,6 +170,6 @@ Official references: [Telegram ephemeral messages](https://core.telegram.org/bot
 npm.cmd test
 ```
 
-The tests cover assignment secrecy, exactly one Impostor, lobby rules, rematches, callback validation, private recipient targeting, public-message leakage, automatic admin delivery, and persistent state.
+The tests cover assignment secrecy, exactly one Impostor, lobby rules, private voting and tie-breaks, rematches, callback validation, private recipient targeting, public-message leakage, automatic admin delivery, and persistent state.
 
 Webhook deployment references: [Vercel Functions](https://vercel.com/docs/functions), [Vercel Redis integrations](https://vercel.com/docs/redis), [Upstash's Vercel integration](https://upstash.com/docs/redis/howto/vercelintegration), and [Telegram `setWebhook`](https://core.telegram.org/bots/api#setwebhook).

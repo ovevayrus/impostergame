@@ -1,5 +1,8 @@
 import {
   addPlayer,
+  callbackData,
+  castVote,
+  closeVoting,
   createLobby,
   finishRound,
   GameRuleError,
@@ -11,6 +14,8 @@ import {
   reopenLobby,
   roleFor,
   startRound,
+  startTieBreakVoting,
+  startVoting,
 } from "./game.js";
 import {
   escapeHtml,
@@ -252,7 +257,11 @@ export class BotController {
     }
 
     const session = this.store.getSession(query.message.chat.id);
-    const isPrivateEphemeralAction = ["end_confirm", "dismiss"].includes(parsed.action);
+    const isPrivateEphemeralAction = [
+      "end_confirm",
+      "finish_vote_confirm",
+      "dismiss",
+    ].includes(parsed.action);
     const isExpectedMessage = isPrivateEphemeralAction
       ? query.message.message_id === 0 && query.message.receiver_user?.id === query.from.id
       : session?.controlMessageId === query.message.message_id;
@@ -283,6 +292,21 @@ export class BotController {
         case "reveal":
           await this.#revealRole(query, session);
           break;
+        case "start_vote":
+          await this.#startVoting(query, session);
+          break;
+        case "vote":
+          await this.#vote(query, session, parsed.argument);
+          break;
+        case "finish_vote":
+          await this.#requestVotingFinish(query, session);
+          break;
+        case "finish_vote_confirm":
+          await this.#finishVoting(query, session);
+          break;
+        case "runoff":
+          await this.#startTieBreakVoting(query, session);
+          break;
         case "end":
           await this.#requestFinish(query, session);
           break;
@@ -290,7 +314,7 @@ export class BotController {
           await this.#finishRound(query, session);
           break;
         case "dismiss":
-          await this.#dismissConfirmation(query);
+          await this.#dismissConfirmation(query, session);
           break;
         case "replay":
           await this.#replay(query, session);
@@ -401,6 +425,144 @@ export class BotController {
     }
   }
 
+  async #startVoting(query, session) {
+    if (!isPlayer(session, query.from.id)) {
+      throw new GameRuleError("not_a_player", "Only a player in this round can start voting.");
+    }
+
+    const voting = startVoting(session);
+    await this.store.setSession(voting);
+    await this.#answer(query, "Voting started — choose who you think is the Impostor.");
+    await this.#syncControl(voting);
+  }
+
+  async #vote(query, session, candidateIndex) {
+    if (!Number.isInteger(candidateIndex)) {
+      throw new GameRuleError("invalid_candidate", "That voting option is no longer available.");
+    }
+    if (!isPlayer(session, query.from.id)) {
+      throw new GameRuleError("not_a_player", "Only joined players can vote.");
+    }
+
+    const candidateId = session.voting?.candidateIds[candidateIndex];
+    const candidate = session.players.find((player) => player.id === candidateId);
+    if (!candidate) {
+      throw new GameRuleError("invalid_candidate", "That voting option is no longer available.");
+    }
+
+    const result = castVote(session, query.from.id, candidateId);
+    await this.store.setSession(result.session);
+    await this.#answer(
+      query,
+      result.changed
+        ? `Vote recorded for ${candidate.name}.`
+        : `Your vote is already for ${candidate.name}.`,
+    );
+
+    if (result.session.voting.ballots.length === result.session.players.length) {
+      await this.#resolveVoting(result.session);
+      return;
+    }
+    await this.#syncControl(result.session);
+  }
+
+  async #requestVotingFinish(query, session) {
+    if (!isPlayer(session, query.from.id)) {
+      throw new GameRuleError("not_a_player", "Only joined players can finish voting.");
+    }
+    const voteCount = session.voting?.ballots.length ?? 0;
+    if (voteCount === 0) {
+      throw new GameRuleError("no_votes", "At least one player must vote before voting can finish.");
+    }
+
+    try {
+      await this.api.call(
+        "sendMessage",
+        {
+          chat_id: session.chatId,
+          receiver_user_id: query.from.id,
+          callback_query_id: query.id,
+          text: [
+            "🗳 <b>Finish voting now?</b>",
+            "",
+            `<b>${voteCount}/${session.players.length}</b> joined players have voted.`,
+            voteCount < session.players.length
+              ? "Players who have not voted will be left out of this ballot."
+              : "Everyone has voted.",
+          ].join("\n"),
+          parse_mode: "HTML",
+          protect_content: true,
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: "Finish now",
+                  callback_data: callbackData(session, "finish_vote_confirm"),
+                },
+                {
+                  text: "Keep voting",
+                  callback_data: callbackData(session, "dismiss"),
+                },
+              ],
+            ],
+          },
+          ...threadParameter(session.threadId),
+        },
+        { signal: AbortSignal.timeout(5_000) },
+      );
+      await this.#answer(query, "Private confirmation sent.");
+    } catch {
+      await this.#answer(
+        query,
+        "Confirmation could not be shown. Keep voting until every joined player has voted.",
+        true,
+      );
+    }
+  }
+
+  async #finishVoting(query, session) {
+    if (!isPlayer(session, query.from.id)) {
+      throw new GameRuleError("not_a_player", "Only joined players can finish voting.");
+    }
+    await this.#resolveVoting(session);
+    await this.#answer(
+      query,
+      session.voting?.ballots.length === session.players.length
+        ? "Voting finished."
+        : "Voting finished with the ballots received so far.",
+    );
+  }
+
+  async #resolveVoting(session) {
+    const resolved = closeVoting(session);
+    if (resolved.phase === Phase.FINISHED) {
+      await this.#postRoundResults(resolved);
+      return;
+    }
+
+    const posted = await this.#syncControl(resolved, { forceNew: true });
+    if (session.controlMessageId && session.controlMessageId !== posted.controlMessageId) {
+      await this.#editClosed(
+        session,
+        "🤝 <b>The vote ended in a tie.</b> Use the new extra-clue panel below.",
+      );
+    }
+  }
+
+  async #startTieBreakVoting(query, session) {
+    if (!isPlayer(session, query.from.id)) {
+      throw new GameRuleError(
+        "not_a_player",
+        "Only a joined player can start the tie-break vote.",
+      );
+    }
+
+    const voting = startTieBreakVoting(session);
+    await this.store.setSession(voting);
+    await this.#answer(query, "Tie-break voting started.");
+    await this.#syncControl(voting);
+  }
+
   async #requestFinish(query, session) {
     if (!isPlayer(session, query.from.id)) {
       throw new GameRuleError("not_a_player", "Only a player in this round can reveal the answer.");
@@ -453,8 +615,11 @@ export class BotController {
     await this.#answer(query, "Answer revealed in a new group message.");
   }
 
-  async #dismissConfirmation(query) {
-    await this.#answer(query, "The current round continues.");
+  async #dismissConfirmation(query, session) {
+    await this.#answer(
+      query,
+      session.voting?.status === "open" ? "Voting continues." : "The current round continues.",
+    );
     if (!query.message.ephemeral_message_id) return;
     try {
       await this.api.call("deleteEphemeralMessage", {
@@ -505,7 +670,9 @@ export class BotController {
     ) {
       await this.#editClosed(
         finished,
-        `🏁 <b>Round ${finished.round} ended.</b> The word, hint, and Impostor were revealed in a new message.`,
+        finished.voteResult
+          ? `🗳 <b>Round ${finished.round} voting is closed.</b> The result was posted in a new message.`
+          : `🏁 <b>Round ${finished.round} ended.</b> The word, hint, and Impostor were revealed in a new message.`,
       );
     }
     return posted;
