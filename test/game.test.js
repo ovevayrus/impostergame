@@ -42,8 +42,13 @@ function lobbyWith(count = 3) {
 }
 
 test("a lobby includes its creator and join/leave is idempotent", () => {
-  let session = lobbyWith(1);
+  let session = createLobby({
+    chatId: -1001,
+    creator: { ...users[0], username: "alice_example" },
+    idFactory: () => "game_test_01",
+  });
   assert.deepEqual(session.players.map((player) => player.id), [101]);
+  assert.equal(Object.hasOwn(session.players[0], "username"), false);
   assert.equal(session.voting, null);
   assert.equal(session.voteResult, null);
 

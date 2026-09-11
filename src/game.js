@@ -33,7 +33,6 @@ export function playerFromTelegramUser(user) {
   return {
     id: user.id,
     name: fullName || user.username || `Player ${user.id}`,
-    username: user.username?.slice(0, 32) || null,
   };
 }
 

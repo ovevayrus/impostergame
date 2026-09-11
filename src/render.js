@@ -15,17 +15,14 @@ export const RULES_TEXT = [
 export const HELP_TEXT = [
   "🎭 <b>Impostor Bot</b>",
   "",
-  "Use /newgame in a group to open a lobby. Players join with the button and anyone can start once there are enough players.",
-  "",
   "<b>Commands</b>",
-  "/newgame — open a lobby",
-  "/status — repost the current game panel",
-  "/rules — explain the game",
-  "/endgame — skip voting and reveal an active round",
-  "/cancelgame — cancel your lobby; group admins can reset any game",
+  "/newgame: open a lobby",
+  "/status: repost the game panel",
+  "/rules: explain the game",
+  "/endgame: skip voting and reveal the answer",
+  "/cancelgame: cancel the current game",
   "",
-  "Roles and votes are handled privately inside the group. Nobody needs to start a direct chat with the bot.",
-  "After the clues and discussion, use <b>Start voting</b>. A tied vote triggers an extra clue round and a tie-break ballot.",
+  "Roles appear privately in the group. Use <b>Reveal my role</b> if you need to see yours again.",
 ].join("\n");
 
 export function escapeHtml(value) {
@@ -152,14 +149,13 @@ export function renderActive(session) {
 
     return {
       text: [
-        `🗳 <b>Who is the Impostor? — round ${session.round}</b>`,
+        `🗳 <b>Who is the Impostor? Round ${session.round}</b>`,
         `<b>${ballotLabel}</b>`,
         "",
-        `Private voting progress: <b>${votesCast}/${total}</b>`,
-        "Tap one name below. Your choice stays private while the ballot is open.",
+        `Votes: <b>${votesCast}/${total}</b>`,
+        "Choose a player below. Votes stay hidden until the ballot closes.",
         "",
-        "Voting closes automatically when all joined players have voted.",
-        "To close the ballot early, any player can tap <b>Finish voting</b>.",
+        "Voting ends when everyone votes, or a player can finish it early.",
       ].join("\n"),
       replyMarkup: openVotingKeyboard(session),
     };
@@ -172,16 +168,14 @@ export function renderActive(session) {
 
     return {
       text: [
-        "⚖️ <b>Vote tied — extra clue round</b>",
-        `Ballot ${session.voting.ballotNumber - 1} ended in a tie.`,
+        "⚖️ <b>The vote is tied: extra clue</b>",
         "",
-        "<b>Tied players — new clue order</b>",
+        "<b>Give one more clue in this order</b>",
         tiedPlayers,
         "",
-        "Each tied player now gives one new clue word aloud, in the order above.",
-        "Give a fresh public clue based on what you know — do not say the private word or hint assigned by the bot.",
+        "Do not reveal your assigned word or hint.",
         "",
-        "When every tied player has spoken, tap <b>Start tie-break vote</b>.",
+        "When everyone has spoken, start the tie-break vote.",
       ].join("\n"),
       replyMarkup: tiebreakKeyboard(session),
     };
@@ -194,21 +188,20 @@ export function renderActive(session) {
     .join("\n");
   const checkedLine =
     viewed === total
-      ? "✅ <b>Everyone has confirmed their role with Reveal.</b>"
-      : `🔐 Players who used Reveal: <b>${viewed}/${total}</b>`;
+      ? "✅ <b>Everyone has checked their role.</b>"
+      : `🔐 Roles checked: <b>${viewed}/${total}</b>`;
 
   return {
     text: [
       `🎭 <b>New round ${session.round}</b>`,
       "",
       checkedLine,
-      "Tap <b>Reveal my role</b> to view it or retrieve it again. Only you can see your word or hint.",
+      "Use <b>Reveal my role</b> whenever you need to see it again.",
       "",
       "<b>Clue order</b>",
       order,
       "",
-      "Give one related word or short phrase each, then discuss who the Impostor might be.",
-      "When everyone is ready, tap <b>Start voting</b>. <b>Reveal answer</b> remains available as a fallback.",
+      "Give your clues, talk it over, then start voting.",
     ].join("\n"),
     replyMarkup: activeKeyboard(session),
   };
@@ -242,7 +235,7 @@ export function renderFinished(session) {
     .map(({ candidateId, count }) => {
       const player = playerById(session, candidateId);
       const voteLabel = count === 1 ? "vote" : "votes";
-      return `${playerMention(player)} — <b>${count}</b> ${voteLabel}`;
+      return `${playerMention(player)}: <b>${count}</b> ${voteLabel}`;
     })
     .join("\n");
 
@@ -255,7 +248,7 @@ export function renderFinished(session) {
         : "❌ <b>The Impostor hasn't been caught.</b>",
       `🗳 <b>The group voted for:</b> ${playerMention(accused)}`,
       "",
-      `<b>Final tally — ballot ${session.voteResult.ballotNumber}</b>`,
+      `<b>Final tally, ballot ${session.voteResult.ballotNumber}</b>`,
       tally,
       "",
       ...revealLines,

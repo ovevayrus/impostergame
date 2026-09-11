@@ -84,6 +84,7 @@ test("storage rejects syntactically valid state with broken structure", async (t
 
 test("session validation remains compatible with legacy active and finished games", () => {
   const active = activeSession();
+  active.players[0].username = "store_tester";
   delete active.voting;
   delete active.voteResult;
   assert.doesNotThrow(() => validateState(stateWith(active)));

@@ -160,7 +160,9 @@ function validateSession(chatKey, session) {
       !Number.isSafeInteger(player.id) ||
       typeof player.name !== "string" ||
       player.name.length === 0 ||
-      (player.username !== null && typeof player.username !== "string") ||
+      (player.username !== undefined &&
+        player.username !== null &&
+        typeof player.username !== "string") ||
       playerIds.has(player.id)
     ) {
       invalidSession(chatKey, "invalid or duplicate player");
